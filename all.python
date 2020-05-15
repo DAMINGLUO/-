@@ -1,0 +1,342 @@
+#本代码采用 python3.7编写
+#opencv环境3.2.0
+#编码格式: utf-8
+#作者：罗明辉
+#部分代码参考于网络
+
+#导入相关库文件
+from __future__ import division
+from threading import Timer
+import time 
+import signal  
+import sys
+import cv2
+import os
+import importlib,sys
+from Blinker.Blinker import Blinker, BlinkerButton, BlinkerNumber, BlinkerAliGenie
+from Blinker.BlinkerConfig import *
+from Blinker.BlinkerDebug import *
+import RPi.GPIO as GPIO
+
+#导入SMTP邮箱相关库
+import smtplib                                  #引入SMTP协议包
+from email.mime.text import MIMEText
+from email.header import Header
+from email.mime.multipart import MIMEMultipart  #创建包含多个部分的邮件体
+from email.mime.base import MIMEBase            #添加附件（附件内容并附加到根容器 ）
+from email.mime.image import MIMEImage
+import os.path                                  #分析路径
+importlib.reload(sys)
+
+sendDate=0
+sender = "1017202540@qq.com"                     #发送邮箱，这里我填的是自己的qq邮箱
+password = " "					#这个是从邮箱获得的密匙，改为自己的
+receiver = "1017202540@qq.com"                  #收件目标邮箱，同样填自己的，自发自收
+
+#--------------------邮件服务与端口信息----------------------
+smtp_server = "smtp.qq.com"
+smtp_port = 465                                 #qq的SMTP端口465
+msg = MIMEMultipart('related')                  #采用related定义内嵌资源的邮件体
+
+cam = cv2.VideoCapture(0)
+cam.set(3, 640) # 设置视频宽度
+cam.set(4, 480) # 设置视频高度
+#级联人脸识别表
+face_detector = cv2.CascadeClassifier('/home/pi/Downloads/email_face/123.xml')
+
+#设置输入输出io口
+IO_OUT = [5, 6, 13, 19, 26]
+IO_IN = [16,20]
+count=0
+
+#blinker连接鉴权信息，这里也需要改为自己的blinker鉴权才可以运行，与邮箱鉴权不同
+auth = '1e9f448894a2'
+
+#gpio针脚模式设置
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+#初始化输出gpio针脚
+GPIO.setup(IO_OUT[0],GPIO.OUT)
+GPIO.setup(IO_OUT[1],GPIO.OUT)
+GPIO.setup(IO_OUT[2],GPIO.OUT)
+GPIO.setup(IO_OUT[3],GPIO.OUT)
+GPIO.setup(IO_OUT[4],GPIO.OUT)
+#初始化输入gpio针脚
+GPIO.setup(IO_IN[0],GPIO.IN,pull_up_down=GPIO.PUD_UP)
+GPIO.setup(IO_IN[1],GPIO.IN,pull_up_down=GPIO.PUD_UP)
+#开启blinker的debug打印日志模式
+BLINKER_DEBUG.debugAll()
+#blinker连接方式设置
+Blinker.mode('BLINKER_WIFI')
+#blinker天猫精灵语音连接类型设置
+Blinker.aliType('BLINKER_ALIGENIE_MULTI_OUTLET')
+#开始启动
+Blinker.begin(auth)
+#绑定控件至blinker
+button_led = BlinkerButton('btn-led') #灯
+button_socket = BlinkerButton('btn-socket') #插座
+button_computer = BlinkerButton('btn-computer') #计算机
+button_fan = BlinkerButton('btn-fan') #风扇
+button_door = BlinkerButton('btn-door')#房门
+
+button_fire = BlinkerButton('btn-fire')#火焰传感器
+button_smoke = BlinkerButton('btn-smoke')#烟雾传感器
+
+number1 = BlinkerNumber('num-os')
+
+#天猫精灵开关状态数组
+wsState = ['off', 'off', 'off', 'off', 'off']
+#传感器状态数组
+sensordata=['safe','safe']
+
+#天猫精灵控制函数
+def aligeniePowerState(state, num):
+    ''' '''
+
+    BLINKER_LOG("need set outlet: ", num, ", power state: ", state)
+
+    global wsState
+    if num == 0 :
+        if state == 'off':
+            GPIO.output(IO_OUT[0],GPIO.LOW)
+        else :
+            GPIO.output(IO_OUT[0],GPIO.HIGH)
+    elif num == 1 :
+        if state == 'off':
+            GPIO.output(IO_OUT[1],GPIO.LOW)
+        else :
+            GPIO.output(IO_OUT[1],GPIO.HIGH)
+    elif num == 2 :
+        if state == 'off':
+            GPIO.output(IO_OUT[2],GPIO.LOW)
+        else :
+            GPIO.output(IO_OUT[2],GPIO.HIGH)
+    elif num == 3 :
+        if state == 'off':
+            GPIO.output(IO_OUT[3],GPIO.LOW)
+        else :
+            GPIO.output(IO_OUT[3],GPIO.HIGH)
+    else :
+        if state == 'off':
+            GPIO.output(IO_OUT[4],GPIO.LOW)
+        else :
+            GPIO.output(IO_OUT[4],GPIO.HIGH)
+    wsState[num] = state
+    BlinkerAliGenie.powerState(state, num)
+    BlinkerAliGenie.print()
+
+def aligenieQuery(queryCode, num):
+    ''' '''
+
+    BLINKER_LOG("AliGenie Query outlet: ", num,", codes: ", queryCode)
+
+    global wsState
+    state = 'off'
+    
+    for i, val in enumerate(wsState) :
+        if i == num :
+            state = val
+
+    if queryCode == BLINKER_CMD_QUERY_ALL_NUMBER :
+        BLINKER_LOG('AliGenie Query All')
+        BlinkerAliGenie.powerState(state, num)
+        BlinkerAliGenie.print()
+    elif queryCode == BLINKER_CMD_QUERY_POWERSTATE_NUMBER :
+        BlinkerAliGenie.powerState(state, num)
+        BlinkerAliGenie.print()
+    else :
+        BlinkerAliGenie.powerState(state, num)
+        BlinkerAliGenie.print()		
+		
+#blinker按钮控制函数
+def button_led_callback(state):
+    ''' '''
+    global wsState
+    
+    BLINKER_LOG('get button state: ', state)
+    if state == "on":
+        GPIO.output(IO_OUT[0],GPIO.LOW)
+        button_led.color('#dcdcdc')
+        button_led.text('close')
+        button_led.print("on")
+        wsState[0] = 'on'
+    else :
+        GPIO.output(IO_OUT[0],GPIO.HIGH)
+        button_led.color('#00ffff')
+        button_led.text('open')
+        button_led.print("off")
+        wsState[0] = 'off'      
+
+def button_socket_callback(state):
+    ''' '''
+    global wsState
+    
+    BLINKER_LOG('get button state: ', state)
+    if state == "on":
+        GPIO.output(IO_OUT[1],GPIO.LOW)
+        button_socket.color('#dcdcdc')
+        button_socket.text('close')
+        button_socket.print("on")
+        wsState[1] = 'on'
+    else :
+        GPIO.output(IO_OUT[1],GPIO.HIGH)
+        button_socket.color('#00ffff')
+        button_socket.text('open')
+        button_socket.print("off")
+        wsState[1] = 'off'      
+
+def button_computer_callback(state):
+    ''' '''
+    global wsState
+    
+    BLINKER_LOG('get button state: ', state)
+    if state == "on":
+        GPIO.output(IO_OUT[2],GPIO.LOW)
+        button_computer.color('#dcdcdc')
+        button_computer.text('close')
+        button_computer.print("on")
+        wsState[2] = 'on'
+    else :
+        GPIO.output(IO_OUT[2],GPIO.HIGH)
+        button_computer.color('#00ffff')
+        button_computer.text('open')
+        button_computer.print("off")
+        wsState[2] = 'off' 
+
+def button_fan_callback(state):
+    ''' '''
+
+    BLINKER_LOG('get button state: ', state)
+
+    if state == "on":
+        GPIO.output(IO_OUT[3],GPIO.LOW)
+        button_fan.color('#dcdcdc')
+        button_fan.text('close')
+        button_fan.print("on")
+        wsState[3] = 'on'
+    else :
+        GPIO.output(IO_OUT[3],GPIO.HIGH)
+        button_fan.color('#00ffff')
+        button_fan.text('open')
+        button_fan.print("off")
+        wsState[3] = 'off'  
+    
+def button_door_callback(state):
+    ''' '''
+    global wsState
+    
+    BLINKER_LOG('get button state: ', state)
+    if state == "on":
+        GPIO.output(IO_OUT[4],GPIO.LOW)
+        button_door.color('#dcdcdc')
+        button_door.text('close')
+        button_door.print("on")
+        wsState[4] = 'on'
+    else :
+        GPIO.output(IO_OUT[4],GPIO.HIGH)
+        button_door.color('#00ffff')
+        button_door.text('open')
+        button_door.print("off")
+        wsState[4] = 'off'      
+
+#火警处理函数
+def button_fire_callback(state):
+    global sensordata
+    if state == "pre" or state == "pup" :
+        button_fire.color('#228b22')
+        button_fire.text('安全，无火警')
+        sensordata[0]='safe'
+    else :
+        button_fire.text('火警处理失败，请重新处理！')
+#烟雾处理函数   
+def button_smoke_callback(state):
+    global sensordata
+    if state == "pre" or state == "pup" :
+        button_smoke.color('#228b22')
+        button_smoke.text('空气清新，无有害气体')
+        sensordata[1]='safe'
+    else :
+        button_smoke.text('有害气体处理失败，请重新处理！')
+        
+button_led.attach(button_led_callback)
+button_socket.attach(button_socket_callback) 
+button_computer.attach(button_computer_callback) 
+button_fan.attach(button_fan_callback) 
+button_door.attach(button_door_callback) 
+button_fire.attach(button_fire_callback)
+button_smoke.attach(button_smoke_callback)
+
+BlinkerAliGenie.attachPowerState(aligeniePowerState)
+BlinkerAliGenie.attachQuery(aligenieQuery)
+
+#火焰中断处理函数
+def my_callback_fire():
+    global sensordata
+    if GPIO.input(IO_IN[0])==0:
+        sensordata[0]='fire'
+        button_fire.color('#ff0000')
+        button_fire.text("发生火警，请尽快灭火处理！")
+        Blinker.vibrate()
+    else:
+        sensordata[0]='safe'
+#烟雾中断处理函数
+def my_callback_smoke():
+    global sensordata
+    if GPIO.input(20)==0:
+        sensordata[1]='smoke'
+        button_smoke.color('#ff0000')
+        button_smoke.text("发现有害气体，请尽快通风处理！")
+        Blinker.vibrate()
+    else:
+        sensordata[1]='safe'
+        
+#中断事件
+GPIO.add_event_detect(IO_IN[0], GPIO.BOTH, callback=my_callback_fire)
+GPIO.add_event_detect(IO_IN[1], GPIO.BOTH, callback=my_callback_smoke)
+
+if __name__ == '__main__':
+    try:
+        while True:
+            Blinker.run()#blinker运行
+			#-----------------以下为摄像头与opencv操作-----------
+            ret, img = cam.read()
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            faces = face_detector.detectMultiScale(gray, 1.3, 5)
+            font=cv2.FONT_HERSHEY_SIMPLEX
+            for (x,y,w,h) in faces:
+                cv2.rectangle(img,(x,y),(x+h,y+w),(0,255,0),2)#0,255,0
+                result = (x,y,w,h)
+                x=result[0]
+                y = result[1]
+                cv2.rectangle(img, (x,y), (x+w,y+h), (255,0,0), 2)
+				#将时间放在照片左上角方便查看
+                cv2.putText(img,time.strftime("%Y-%m-%d %H:%M:%S",time.localtime()),(20,20),font,0.8,(255,255,255),1)
+                count += 1#人员计数
+                #保存在本地文件夹/home/pi/Desktop/faceproject/dataset
+                cv2.imwrite("/home/pi/Desktop/faceproject/dataset/" + str(count) + ".png",img)
+        
+                img_file = open("/home/pi/Desktop/faceproject/dataset/" + str(count) + ".png","rb")
+                img_data = img_file.read()
+                img_file.close()
+                img = MIMEImage(img_data)
+                img.add_header('Content-ID', '0')    #正常附件的header是不同的
+                msg.attach(img)
+                msg["From"] = Header("daming", "utf-8")
+                msg["To"] = Header(receiver, "utf-8")
+                msg["Subject"] = Header("有人入侵", "utf-8")
+				
+                #-----------------将图片作为正文内容添加-------------------
+                message = MIMEText("<p>注意!!!</p><p>有人进入了你的房间</p><img src='cid:0'/>","html","utf-8")
+                msg.attach(message)
+                contype = 'application/octet-stream'
+                maintype, subtype = contype.split('/', 1)
+                smtpObject = smtplib.SMTP_SSL(smtp_server , smtp_port)
+                smtpObject.login(sender , password)
+				#发送邮件
+                smtpObject.sendmail(sender , [receiver] , msg.as_string())
+				#每10秒查看一次，防止频繁向邮箱发邮件
+                Blinker.delay(10000)
+                
+    except KeyboardInterrupt:
+        GPIO.cleanup()
+
